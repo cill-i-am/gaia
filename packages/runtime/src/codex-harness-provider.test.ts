@@ -658,7 +658,7 @@ describe("Codex HarnessProvider adapter", () => {
       approvalPolicy: "on-request",
       cwd: "/workspace/project",
       model: "gpt-5.6-codex",
-      reasoningEffort: "high",
+      config: { model_reasoning_effort: "high" },
       sandbox: "workspace-write",
     });
     expect(observations).toEqual([
@@ -709,7 +709,9 @@ describe("Codex HarnessProvider adapter", () => {
     );
     expect(exit._tag).toBe("Failure");
     expect(mismatched.starts).toEqual([
-      expect.objectContaining({ reasoningEffort: "high" }),
+      expect.objectContaining({
+        config: { model_reasoning_effort: "high" },
+      }),
     ]);
     expect(
       await Effect.runPromise(mismatchStore.load(mismatchSessionId))

@@ -295,7 +295,9 @@ describe("Codex App Server connection", () => {
           });
           const client = makeCodexAppServerClient(connection);
           const start = yield* client
-            .startThread({ reasoningEffort: "high" })
+            .startThread({
+              config: { model_reasoning_effort: "high" },
+            })
             .pipe(Effect.exit, Effect.forkChild);
           yield* Effect.yieldNow;
           const writes = [...fake.writes];
@@ -312,7 +314,7 @@ describe("Codex App Server connection", () => {
       {
         id: 1,
         method: "thread/start",
-        params: { reasoningEffort: "high" },
+        params: { config: { model_reasoning_effort: "high" } },
       },
     ]);
     expect(result.exit._tag).toBe("Failure");

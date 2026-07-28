@@ -917,14 +917,17 @@ export const InitializeResultSchema = Schema.Struct({
   platformOs: Schema.String,
   userAgent: Schema.String,
 });
+const ThreadStartConfigSchema = Schema.Struct({
+  model_reasoning_effort: Schema.NonEmptyString,
+});
 export const ThreadStartParamsSchema = Schema.Struct({
   approvalPolicy: Schema.optionalKey(
     Schema.Literals(["untrusted", "on-request", "never"] as const)
   ),
+  config: Schema.optionalKey(ThreadStartConfigSchema),
   cwd: Schema.optionalKey(Schema.String),
   ephemeral: Schema.optionalKey(Schema.Boolean),
   model: Schema.optionalKey(CodexModelIdSchema),
-  reasoningEffort: Schema.optionalKey(Schema.NonEmptyString),
   sandbox: Schema.optionalKey(
     Schema.Literals([
       "read-only",
