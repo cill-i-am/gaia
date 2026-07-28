@@ -285,6 +285,39 @@ describe("Codex App Server connection", () => {
     expect(result.healthy).toEqual({ ok: true });
   });
 
+  it("serializes configured reasoning effort on thread/start", async () => {
+    const fake = fakeProcess();
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* makeCodexAppServerConnection({
+            process: fake.process,
+          });
+          const client = makeCodexAppServerClient(connection);
+          const start = yield* client
+            .startThread({ reasoningEffort: "high" })
+            .pipe(Effect.exit, Effect.forkChild);
+          yield* Effect.yieldNow;
+          const writes = [...fake.writes];
+          for (const listener of fake.lines)
+            listener(
+              JSON.stringify({ id: 1, result: { thread: { id: "thread-1" } } })
+            );
+          return { exit: yield* Fiber.join(start), writes };
+        })
+      )
+    );
+
+    expect(result.writes).toEqual([
+      {
+        id: 1,
+        method: "thread/start",
+        params: { reasoningEffort: "high" },
+      },
+    ]);
+    expect(result.exit._tag).toBe("Failure");
+  });
+
   it("routes curated notifications, rejects unsupported requests, and fails closed for malformed known requests", async () => {
     const fake = fakeProcess();
     await Effect.runPromise(

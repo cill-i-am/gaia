@@ -924,6 +924,7 @@ export const ThreadStartParamsSchema = Schema.Struct({
   cwd: Schema.optionalKey(Schema.String),
   ephemeral: Schema.optionalKey(Schema.Boolean),
   model: Schema.optionalKey(CodexModelIdSchema),
+  reasoningEffort: Schema.optionalKey(Schema.NonEmptyString),
   sandbox: Schema.optionalKey(
     Schema.Literals([
       "read-only",
