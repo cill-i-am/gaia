@@ -4,6 +4,7 @@ import {
   HarnessEnvironmentReceiptArtifactRefV1,
   HarnessEnvironmentReceiptV1,
   HarnessLaunchObservationV1,
+  HarnessPreparedRunReceiptRefV1,
   ModelContextManifestV1,
   ModelInvocationEpisodeStartV1,
   ModelInvocationManifestV1,
@@ -13,9 +14,11 @@ import {
   StructuralDigestSchema,
   digestHarnessEnvironmentContract,
   makeHarnessEnvironmentReceiptV1,
+  makeHarnessPreparedRunReceiptRefV1,
   makeRunControlCheckpointDigest,
   makeRunControlRequestDigest,
   parseHarnessEnvironmentReceiptV1,
+  parseHarnessPreparedRunReceiptV1,
   parseHarnessEvent,
   parseHarnessSessionId,
   parseRunControlAuthorityId,
@@ -534,6 +537,65 @@ function environmentEvidenceError(
   });
 }
 
+function resolveWorkerInitialEnvironmentEpisode(
+  events: ReadonlyArray<RunEvent>
+) {
+  const workerStarts = events.filter(({ type }) => type === "WORKER_STARTED");
+  if (workerStarts.length !== 1) throw new Error("Worker start is ambiguous.");
+  const workerStart = workerStarts[0];
+  if (workerStart === undefined) throw new Error("Worker start is missing.");
+  const workerEpisode = workerStart.payload["modelInvocationEpisode"];
+  if (workerEpisode !== undefined) {
+    const episode = decodeModelInvocationEpisodeStart(workerEpisode);
+    if (episode.episodeKey !== "workerInitial")
+      throw new Error("Worker start has the wrong model invocation episode.");
+    return episode;
+  }
+
+  const workerPreparedRef = Schema.decodeUnknownSync(
+    HarnessPreparedRunReceiptRefV1
+  )(workerStart.payload["harnessPreparedRunReceiptRef"]);
+  const preparedEvents = events.filter(
+    ({ payload, type }) =>
+      type === "HARNESS_PREPARED_RUN_RECORDED" &&
+      payload["strictV2PreparationRequest"] !== undefined
+  );
+  if (preparedEvents.length !== 1)
+    throw new Error("Strict-V2 prepared receipt is missing or ambiguous.");
+  const preparedEvent = preparedEvents[0];
+  if (
+    preparedEvent === undefined ||
+    preparedEvent.sequence >= workerStart.sequence
+  )
+    throw new Error(
+      "Strict-V2 prepared receipt does not precede worker start."
+    );
+  const preparedReceipt = parseHarnessPreparedRunReceiptV1(
+    preparedEvent.payload["harnessPreparedRunReceipt"]
+  );
+  const expectedPreparedRef = makeHarnessPreparedRunReceiptRefV1({
+    eventSequence: preparedEvent.sequence,
+    receipt: preparedReceipt,
+  });
+  if (
+    workerPreparedRef.eventSequence !== expectedPreparedRef.eventSequence ||
+    workerPreparedRef.receiptDigest !== expectedPreparedRef.receiptDigest ||
+    workerPreparedRef.runId !== expectedPreparedRef.runId ||
+    workerPreparedRef.version !== expectedPreparedRef.version
+  )
+    throw new Error(
+      "Worker start does not bind the strict-V2 prepared receipt."
+    );
+  const episode = decodeModelInvocationEpisodeStart(
+    preparedEvent.payload["modelInvocationEpisode"]
+  );
+  if (episode.episodeKey !== "workerInitial")
+    throw new Error(
+      "Strict-V2 prepared receipt has the wrong model invocation episode."
+    );
+  return episode;
+}
+
 function writePrivateFileAtomically(target: string, body: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -590,20 +652,15 @@ export function readHarnessEnvironmentReceipt(
       try: () => parseHarnessEnvironmentReceiptV1(JSON.parse(body)),
       catch: () => environmentEvidenceError(),
     });
-    const matchesRecordedEpisode = events.some((event) => {
-      if (event.type !== "WORKER_STARTED") return false;
-      const episode = Option.getOrUndefined(
-        Schema.decodeUnknownOption(ModelInvocationEpisodeStartV1)(
-          event.payload["modelInvocationEpisode"]
-        )
-      );
-      return (
-        episode !== undefined &&
-        receipt.modelInvocation.contextRef.path === episode.contextRef.path &&
-        receipt.modelInvocation.invocationRef.path ===
-          episode.invocationRef.path
-      );
+    const recordedEpisode = yield* Effect.try({
+      try: () => resolveWorkerInitialEnvironmentEpisode(events),
+      catch: () => environmentEvidenceError(),
     });
+    const matchesRecordedEpisode =
+      receipt.modelInvocation.contextRef.path ===
+        recordedEpisode.contextRef.path &&
+      receipt.modelInvocation.invocationRef.path ===
+        recordedEpisode.invocationRef.path;
     if (
       body !==
         `${JSON.stringify(encodeHarnessEnvironmentReceipt(receipt))}\n` ||
@@ -630,14 +687,8 @@ export function commitHarnessEnvironmentCandidate(input: {
     const assignment = input.resolvedExecution.environmentAssignment;
     if (assignment === undefined)
       return yield* Effect.fail(environmentEvidenceError());
-    const workerStart = [...input.events]
-      .reverse()
-      .find(({ type }) => type === "WORKER_STARTED");
     const episode = yield* Effect.try({
-      try: () =>
-        decodeModelInvocationEpisodeStart(
-          workerStart?.payload["modelInvocationEpisode"]
-        ),
+      try: () => resolveWorkerInitialEnvironmentEpisode(input.events),
       catch: () => environmentEvidenceError(),
     });
     const pair = yield* loadModelInvocationPair(input.paths, episode);

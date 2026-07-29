@@ -658,6 +658,7 @@ describe("Codex HarnessProvider adapter", () => {
       approvalPolicy: "on-request",
       cwd: "/workspace/project",
       model: "gpt-5.6-codex",
+      config: { model_reasoning_effort: "high" },
       sandbox: "workspace-write",
     });
     expect(observations).toEqual([
@@ -671,16 +672,21 @@ describe("Codex HarnessProvider adapter", () => {
     ]);
 
     const mismatched = recordingClient();
+    const mismatchStore = makeInMemoryCodexHarnessCorrelationStore();
+    const mismatchSessionId = parseHarnessSessionId("session-runtime-mismatch");
     const exit = await Effect.runPromise(
       Effect.scoped(
         startHarnessSession({
           provider: createCodexHarnessProvider({
             client: {
               ...mismatched.client,
-              startThread: () =>
-                Effect.succeed({
-                  ...runtimeThreadResult(mismatched.threadId),
-                  model: "different-model",
+              startThread: (params) =>
+                Effect.sync(() => {
+                  mismatched.starts.push(params);
+                  return {
+                    ...runtimeThreadResult(mismatched.threadId),
+                    reasoningEffort: "medium",
+                  };
                 }),
             },
             config: CodexHarnessProviderConfig.make({
@@ -689,12 +695,12 @@ describe("Codex HarnessProvider adapter", () => {
               reasoningEffort: "high",
               workspaceRoot: "/workspace",
             }),
-            correlationStore: makeInMemoryCodexHarnessCorrelationStore(),
+            correlationStore: mismatchStore,
             launchObservation,
           }),
           request: {
             input: { text: "start" },
-            sessionId: parseHarnessSessionId("session-runtime-mismatch"),
+            sessionId: mismatchSessionId,
             workspacePath: parseWorkspaceRelativePath("project"),
           },
           requiredCapabilities: [],
@@ -702,7 +708,14 @@ describe("Codex HarnessProvider adapter", () => {
       )
     );
     expect(exit._tag).toBe("Failure");
-    expect(mismatched.starts).toEqual([]);
+    expect(mismatched.starts).toEqual([
+      expect.objectContaining({
+        config: { model_reasoning_effort: "high" },
+      }),
+    ]);
+    expect(
+      await Effect.runPromise(mismatchStore.load(mismatchSessionId))
+    ).toBeUndefined();
     expect(observations).toHaveLength(1);
   });
 

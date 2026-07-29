@@ -120,6 +120,7 @@ export {
   FactoryLessonIdSchema,
   FactoryLessonOmissionV1,
   FactoryLessonOwnerRefSchema,
+  FactoryLessonProofSourceV1,
   FactoryLessonProjectionDigestSchema,
   FactoryLessonProjectionRefV1,
   FactoryLessonProjectionV1,

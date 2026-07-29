@@ -514,6 +514,13 @@ export function createCodexHarnessProvider(
             ...(configuredModel === undefined
               ? {}
               : { model: configuredModel }),
+            ...(options.config.reasoningEffort === undefined
+              ? {}
+              : {
+                  config: {
+                    model_reasoning_effort: options.config.reasoningEffort,
+                  },
+                }),
             sandbox: "workspace-write",
           })
           .pipe(

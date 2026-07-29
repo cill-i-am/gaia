@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { assert, describe, it } from "@effect/vitest";
 import { Schema } from "effect";
@@ -8,6 +9,7 @@ import {
   FACTORY_LESSON_REVIEWED_FIELDS_V1,
   FactoryLessonActiveV1,
   FactoryLessonContextSelectionV1,
+  FactoryLessonReviewInputV1,
   FactoryLessonReviewReceiptV1,
   makeFactoryLessonCandidateV1,
   makeFactoryLessonContextSelectionV1,
@@ -26,8 +28,15 @@ import {
   resolveFactoryLessonContextAttribution,
   selectFactoryLessonsForWorkerInitial,
 } from "./model-invocation.js";
+import {
+  encodeAnyRunProofResultJson,
+  makeRunContractV2,
+  makeRunProofResultV2,
+  ProofClaimResultV2Schema,
+} from "./run-contract-v2.js";
 import { parseRunEventSequence } from "./run-contract.js";
 import { parseRunId } from "./run-id.js";
+import { parseMarkdownSpec } from "./spec.js";
 
 const sourceRunId = parseRunId("run-source0001");
 const laterRunId = parseRunId("run-later00001");
@@ -119,6 +128,108 @@ function acceptedReview(sequence = 2, input = lessonInput) {
   return { candidate, event, failure: failure.event, receipt };
 }
 
+function acceptedReviewFromSource(
+  source: unknown,
+  sequence = 2,
+  input = lessonInput
+) {
+  const candidate = makeFactoryLessonCandidateV1(input);
+  const attestation = makeNoRawTelemetryAttestationV1({
+    candidateDigest: candidate.candidateDigest,
+    reviewerRef,
+  });
+  const receipt = makeFactoryLessonReviewReceiptV1(
+    Schema.decodeUnknownSync(FactoryLessonReviewInputV1)({
+      attestation,
+      candidate,
+      decision: "accepted",
+      source,
+    })
+  );
+  const event = makeRunEvent({
+    payload: {
+      factoryLessonReview: Schema.encodeSync(FactoryLessonReviewReceiptV1)(
+        receipt
+      ),
+    },
+    runId: sourceRunId,
+    sequence,
+    timestamp: `2026-07-25T20:00:0${sequence}.000Z`,
+    type: "FACTORY_LESSON_REVIEW_RECORDED",
+  });
+  return { event, receipt };
+}
+
+function makeStrictV2ProofSource(sequence: number) {
+  const spec = parseMarkdownSpec(
+    readFileSync(
+      new URL(
+        "../../../examples/specs/claim-verification-v2.md",
+        import.meta.url
+      ),
+      "utf8"
+    ),
+    "factory lesson proof source"
+  );
+  const contract = makeRunContractV2({
+    baseDigest: "1".repeat(64),
+    baseIdentity: { kind: "unversionedSnapshot", workspacePath: "." },
+    runId: sourceRunId,
+    spec,
+    targetDigest: "2".repeat(64),
+    targetIdentity: { kind: "unversionedWorkspace", workspacePath: "." },
+  });
+  const result = makeRunProofResultV2({
+    contentAuthoritySequence: parseRunEventSequence(sequence),
+    contract,
+    observedTargetDigest: contract.targetDigest,
+    recordedBy: {
+      runId: sourceRunId,
+      sequence: parseRunEventSequence(sequence),
+      type: "RUN_PROOF_RESULT_RECORDED",
+    },
+    results: Schema.decodeUnknownSync(Schema.Array(ProofClaimResultV2Schema))(
+      contract.proofClaims.map((claim) =>
+        claim.kind === "command"
+          ? {
+              claimId: claim.claimId,
+              evidence: [],
+              reason: "The exact command returned a non-zero status.",
+              status: "failed",
+            }
+          : claim.kind === "human-judgment"
+            ? {
+                claimId: claim.claimId,
+                reason: "An explicit paired-review decision is required.",
+                requiredAuthority: "human",
+                status: "requires-decision",
+              }
+            : {
+                claimId: claim.claimId,
+                reason: "Post-publication evidence is unavailable.",
+                status: "not-run",
+              }
+      )
+    ),
+  });
+  return {
+    event: makeRunEvent({
+      payload: { result: encodeAnyRunProofResultJson(result) },
+      runId: sourceRunId,
+      sequence,
+      timestamp: `2026-07-25T20:00:0${sequence}.000Z`,
+      type: "RUN_PROOF_RESULT_RECORDED",
+    }),
+    source: {
+      eventSequence: parseRunEventSequence(sequence),
+      resultDigest: result.resultDigest,
+      runId: sourceRunId,
+      type: "RUN_PROOF_RESULT_RECORDED" as const,
+      version: 1 as const,
+    },
+  };
+}
+
 function baseContent(taskInput = "Implement the accepted slice.") {
   return makeModelContextContentV1({
     acceptedOutcomes: ["Return an inspectable implementation."],
@@ -139,6 +250,80 @@ function baseContent(taskInput = "Implement the accepted slice.") {
 }
 
 describe("reviewed factory lessons", () => {
+  it("accepts only an exact authoritative strict-V2 proof-result lesson source", () => {
+    const proof = makeStrictV2ProofSource(1);
+    const accepted = acceptedReviewFromSource(proof.source);
+
+    assert.strictEqual(
+      projectFactoryLessons([proof.event, accepted.event]).active.length,
+      1
+    );
+
+    const malformed = { ...proof.source, resultDigest: "not-a-digest" };
+    assert.throws(() => acceptedReviewFromSource(malformed));
+
+    const wrongDigest = acceptedReviewFromSource({
+      ...proof.source,
+      resultDigest: "a".repeat(64),
+    });
+    assert.throws(
+      () => projectFactoryLessons([proof.event, wrongDigest.event]),
+      /proof|source|digest/u
+    );
+
+    assert.throws(
+      () => projectFactoryLessons([accepted.event]),
+      /proof|source/u
+    );
+
+    const wrongSequence = acceptedReviewFromSource(
+      {
+        ...proof.source,
+        eventSequence: parseRunEventSequence(2),
+      },
+      3
+    );
+    assert.throws(
+      () => projectFactoryLessons([proof.event, wrongSequence.event]),
+      /proof|source/u
+    );
+
+    const wrongType = makeRunEvent({
+      payload: {},
+      runId: sourceRunId,
+      sequence: 1,
+      timestamp: "2026-07-25T20:00:01.000Z",
+      type: "RUN_CREATED",
+    });
+    assert.throws(
+      () => projectFactoryLessons([wrongType, accepted.event]),
+      /proof|source/u
+    );
+
+    const rebound = acceptedReviewFromSource({
+      ...proof.source,
+      runId: laterRunId,
+    });
+    assert.throws(
+      () => projectFactoryLessons([proof.event, rebound.event]),
+      /proof|source|run/u
+    );
+
+    const malformedEnvelope = {
+      ...proof.event,
+      payload: { result: { version: 2 } },
+    };
+    assert.throws(
+      () => projectFactoryLessons([malformedEnvelope, accepted.event]),
+      /Missing key|parse|proof|source|result/u
+    );
+
+    assert.throws(
+      () => projectFactoryLessons([proof.event, proof.event, accepted.event]),
+      /proof|source|ambiguous/u
+    );
+  });
+
   it("creates an exact compact projection only after an explicit reviewed no-raw-telemetry attestation", () => {
     const { candidate, failure, event, receipt } = acceptedReview();
     const replayed = projectFactoryLessons([failure, event]);

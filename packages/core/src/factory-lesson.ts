@@ -7,7 +7,12 @@ import {
   parseFailureRepairReceipt,
   type FailureRepairReceipt,
 } from "./failure-repair.js";
-import { canonicalV1, RunEventSequenceSchema } from "./run-contract.js";
+import { parseAnyRunProofResultEnvelope } from "./run-contract-v2.js";
+import {
+  canonicalV1,
+  RunEventSequenceSchema,
+  RunProofResultDigestSchema,
+} from "./run-contract.js";
 import { RunIdSchema } from "./run-id.js";
 
 const strict = { parseOptions: { onExcessProperty: "error" as const } };
@@ -138,13 +143,31 @@ export class FactoryLessonFailureSourceV1 extends Schema.Class<FactoryLessonFail
   strict
 ) {}
 
+export class FactoryLessonProofSourceV1 extends Schema.Class<FactoryLessonProofSourceV1>(
+  "FactoryLessonProofSourceV1"
+)(
+  {
+    eventSequence: RunEventSequenceSchema,
+    resultDigest: RunProofResultDigestSchema,
+    runId: RunIdSchema,
+    type: Schema.Literal("RUN_PROOF_RESULT_RECORDED"),
+    version: Schema.Literal(1),
+  },
+  strict
+) {}
+
+const FactoryLessonReviewSourceV1 = Schema.Union([
+  FactoryLessonFailureSourceV1,
+  FactoryLessonProofSourceV1,
+]);
+
 const acceptedReviewFields = {
   attestation: NoRawTelemetryAttestationV1,
   candidateDigest: FactoryLessonCandidateDigestSchema,
   decision: Schema.Literal("accepted"),
   projection: FactoryLessonProjectionV1,
   reviewDigest: FactoryLessonReviewDigestSchema,
-  source: FactoryLessonFailureSourceV1,
+  source: FactoryLessonReviewSourceV1,
   version: Schema.Literal(1),
 } as const;
 
@@ -172,7 +195,7 @@ export class FactoryLessonRejectedReviewV1 extends Schema.Class<FactoryLessonRej
     reason: rejectedReasonSchema,
     reviewDigest: FactoryLessonReviewDigestSchema,
     reviewerRef: FactoryLessonReviewerRefSchema,
-    source: FactoryLessonFailureSourceV1,
+    source: FactoryLessonReviewSourceV1,
     version: Schema.Literal(1),
   },
   strict
@@ -187,7 +210,7 @@ export class FactoryLessonDeferredReviewV1 extends Schema.Class<FactoryLessonDef
     reason: deferredReasonSchema,
     reviewDigest: FactoryLessonReviewDigestSchema,
     reviewerRef: FactoryLessonReviewerRefSchema,
-    source: FactoryLessonFailureSourceV1,
+    source: FactoryLessonReviewSourceV1,
     version: Schema.Literal(1),
   },
   strict
@@ -257,21 +280,21 @@ const AcceptedReviewInput = Schema.Struct({
   attestation: NoRawTelemetryAttestationV1,
   candidate: FactoryLessonCandidateV1,
   decision: Schema.Literal("accepted"),
-  source: FactoryLessonFailureSourceV1,
+  source: FactoryLessonReviewSourceV1,
 });
 const RejectedReviewInput = Schema.Struct({
   candidateDigest: FactoryLessonCandidateDigestSchema,
   decision: Schema.Literal("rejected"),
   reason: rejectedReasonSchema,
   reviewerRef: FactoryLessonReviewerRefSchema,
-  source: FactoryLessonFailureSourceV1,
+  source: FactoryLessonReviewSourceV1,
 });
 const DeferredReviewInput = Schema.Struct({
   candidateDigest: FactoryLessonCandidateDigestSchema,
   decision: Schema.Literal("deferred"),
   reason: deferredReasonSchema,
   reviewerRef: FactoryLessonReviewerRefSchema,
-  source: FactoryLessonFailureSourceV1,
+  source: FactoryLessonReviewSourceV1,
 });
 const SupersededReviewInput = Schema.Struct({
   decision: Schema.Literal("superseded"),
@@ -663,6 +686,7 @@ function projectFactoryLessonsInternal(
   validateSelections: boolean
 ): FactoryLessonReadModelV1 {
   const failureSources = new Map<string, FailureRepairReceipt>();
+  const proofSources = new Map<string, RunEvent>();
   const active = new Map<string, FactoryLessonActiveV1>();
   const candidateStates = new Map<
     string,
@@ -681,10 +705,20 @@ function projectFactoryLessonsInternal(
         runCreatedAtById
       );
     if (event.type === "FAILURE_REPAIR_RECORDED") {
+      const key = sourceKey(event.runId, event.sequence);
+      if (failureSources.has(key) || proofSources.has(key))
+        throw new Error("Factory lesson source evidence is ambiguous.");
       failureSources.set(
-        sourceKey(event.runId, event.sequence),
+        key,
         parseFailureRepairReceipt(event.payload["failureRepair"])
       );
+      continue;
+    }
+    if (event.type === "RUN_PROOF_RESULT_RECORDED") {
+      const key = sourceKey(event.runId, event.sequence);
+      if (failureSources.has(key) || proofSources.has(key))
+        throw new Error("Factory lesson source evidence is ambiguous.");
+      proofSources.set(key, event);
       continue;
     }
     if (event.type !== "FACTORY_LESSON_REVIEW_RECORDED") continue;
@@ -696,17 +730,47 @@ function projectFactoryLessonsInternal(
       receipt.decision === "rejected" ||
       receipt.decision === "deferred"
     ) {
-      const source = failureSources.get(
-        sourceKey(receipt.source.runId, receipt.source.eventSequence)
+      const sourceKeyValue = sourceKey(
+        receipt.source.runId,
+        receipt.source.eventSequence
       );
       if (
-        source === undefined ||
         receipt.source.runId !== event.runId ||
-        source.digest.fingerprint !== receipt.source.failureFingerprint
+        receipt.source.eventSequence >= event.sequence
       )
         throw new Error(
-          "Factory lesson review does not bind exact prior failure-repair source evidence."
+          "Factory lesson review does not bind exact prior source evidence."
         );
+      if (receipt.source.type === "FAILURE_REPAIR_RECORDED") {
+        const source = failureSources.get(sourceKeyValue);
+        if (
+          source === undefined ||
+          source.digest.fingerprint !== receipt.source.failureFingerprint
+        )
+          throw new Error(
+            "Factory lesson review does not bind exact prior failure-repair source evidence."
+          );
+      } else {
+        const sourceEvent = proofSources.get(sourceKeyValue);
+        if (sourceEvent === undefined)
+          throw new Error(
+            "Factory lesson review does not bind exact prior strict-V2 proof-result source evidence."
+          );
+        const result = parseAnyRunProofResultEnvelope(
+          sourceEvent.payload["result"]
+        );
+        if (
+          result.version !== 2 ||
+          result.runId !== sourceEvent.runId ||
+          result.recordedBy.runId !== sourceEvent.runId ||
+          result.recordedBy.sequence !== sourceEvent.sequence ||
+          result.recordedBy.type !== sourceEvent.type ||
+          result.resultDigest !== receipt.source.resultDigest
+        )
+          throw new Error(
+            "Factory lesson review does not bind exact prior strict-V2 proof-result source evidence."
+          );
+      }
       const priorState = candidateStates.get(receipt.candidateDigest);
       const legalInitialOrDeferredResolution =
         priorState === undefined ||
