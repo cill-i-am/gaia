@@ -106,6 +106,103 @@ const lessonInput = {
 describe("factory lesson runtime", () => {
   layer(NodeServices.layer)((it) => {
     it.effect(
+      "records an idempotent reviewed strict-V2 proof source without starting a provider session (generic append exclusion: rejects forged offered attribution through the public runtime append surface)",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* fs.makeTempDirectory({
+            prefix: "gaia-factory-lesson-proof-source-",
+          });
+          const source = yield* writeRepairSource(root, true);
+          const candidate = makeFactoryLessonCandidateV1(lessonInput);
+          const review = makeAcceptedProofReview(candidate, source);
+          const before = yield* readEvents(source.paths);
+
+          const recorded = yield* recordFactoryLessonReview(
+            sourceRunId,
+            review.input,
+            { rootDirectory: root }
+          );
+          const after = yield* readEvents(source.paths);
+          const read = yield* readFactoryLessons({ rootDirectory: root });
+          const artifact = yield* readFactoryLessonsArtifact(sourceRunId, {
+            rootDirectory: root,
+          });
+          const rebuilt = yield* rebuildFactoryLessons(sourceRunId, {
+            rootDirectory: root,
+          });
+
+          assert.strictEqual(recorded.review.decision, "accepted");
+          if (recorded.review.decision !== "accepted")
+            return yield* Effect.die("Proof review fixture was not accepted.");
+          assert.strictEqual(
+            recorded.review.source.type,
+            "RUN_PROOF_RESULT_RECORDED"
+          );
+          if (recorded.review.source.type !== "RUN_PROOF_RESULT_RECORDED")
+            return yield* Effect.die("Proof review source was not strict-V2.");
+          assert.strictEqual(
+            recorded.review.source.resultDigest,
+            source.freshProof.resultDigest
+          );
+          assert.strictEqual(after.length, before.length + 1);
+          assert.deepEqual(
+            after.slice(before.length).map((event) => event.type),
+            ["FACTORY_LESSON_REVIEW_RECORDED"]
+          );
+          assert.strictEqual(
+            after.at(-1)?.type,
+            "FACTORY_LESSON_REVIEW_RECORDED"
+          );
+          assert.deepEqual(recorded.projection, read);
+          assert.deepEqual(recorded.artifact, artifact);
+          assert.deepEqual(artifact, rebuilt);
+
+          const repeated = yield* recordFactoryLessonReview(
+            sourceRunId,
+            review.input,
+            { rootDirectory: root }
+          );
+          const afterRepeated = yield* readEvents(source.paths);
+          assert.deepEqual(repeated.event, recorded.event);
+          assert.deepEqual(repeated.artifact, recorded.artifact);
+          assert.strictEqual(afterRepeated.length, after.length);
+
+          const conflict = yield* Effect.flip(
+            recordFactoryLessonReview(
+              sourceRunId,
+              {
+                ...review.input,
+                source: {
+                  ...review.input.source,
+                  resultDigest: "a".repeat(64),
+                },
+              },
+              { rootDirectory: root }
+            )
+          );
+          if (!("code" in conflict))
+            return yield* Effect.die("Conflicting proof review was untyped.");
+          assert.strictEqual(conflict.code, "InvalidFactoryLessonHistory");
+          assert.strictEqual(
+            (yield* readEvents(source.paths)).length,
+            after.length
+          );
+          assert.isFalse(
+            after
+              .slice(before.length)
+              .some((event) =>
+                [
+                  "HARNESS_SESSION_EVENT_RECORDED",
+                  "CORRELATION_RECORDED",
+                  "WORKER_STARTED",
+                ].includes(event.type)
+              )
+          );
+        })
+    );
+
+    it.effect(
       "records a terminal reviewed transition before rebuilding its disposable event-derived projection",
       () =>
         Effect.gen(function* () {
@@ -1624,6 +1721,31 @@ function makeAcceptedReview(
   return { input, receipt };
 }
 
+function makeAcceptedProofReview(
+  candidate: ReturnType<typeof makeFactoryLessonCandidateV1>,
+  source: Awaited<ReturnType<typeof sourceFixture>>
+) {
+  const input = {
+    attestation: makeNoRawTelemetryAttestationV1({
+      candidateDigest: candidate.candidateDigest,
+      reviewerRef,
+    }),
+    candidate,
+    decision: "accepted",
+    source: {
+      eventSequence: parseRunEventSequence(12),
+      resultDigest: source.freshProof.resultDigest,
+      runId: sourceRunId,
+      type: "RUN_PROOF_RESULT_RECORDED",
+      version: 1,
+    },
+  } as const;
+  const receipt = makeFactoryLessonReviewReceiptV1(input);
+  if (receipt.decision !== "accepted")
+    throw new Error("Accepted proof review fixture was not accepted.");
+  return { input, receipt };
+}
+
 function renderedFactoryLessonRef(input: {
   readonly lessonId: string;
   readonly projectionDigest: string;
@@ -1868,7 +1990,7 @@ function sourceFixture() {
       type: "REPORT_COMPLETED",
     }),
   ];
-  return { digest, events };
+  return { digest, events, freshProof };
 }
 
 function makeProof(
