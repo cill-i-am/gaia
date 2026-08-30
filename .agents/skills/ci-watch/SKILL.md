@@ -52,11 +52,13 @@ the assertion, raise the timeout, or start a governance cycle.
 
 ## Automation
 
-When inline waiting would waste the worker session, use `automation_update` to
-create or update the single heartbeat for this PR. Include only the inputs
-above. Verify the automation exists and has the intended next run. Do not copy
-historic approvals, comment ID chains, full issue prose, or stale policy into
-the prompt.
+Make at most one bounded inline wait when the pending state may change soon. If
+decision-relevant state is unchanged, do not repeat the same status, diff,
+wait, or job query in the current run. Use `automation_update` to create or
+update the single heartbeat for this PR, verify it has the intended next run,
+report the pending item and last meaningful observation, and stop the current
+run. Include only the inputs above. Do not copy historic approvals, comment ID
+chains, full issue prose, or stale policy into the prompt.
 
 For an active worker PR, prefer a two-to-three-minute heartbeat unless the
 provider or task needs a different cadence. The prompt should name the repo,

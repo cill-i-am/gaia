@@ -17,7 +17,7 @@
       "source": "cill-i-am/skills",
       "sourceType": "github",
       "skillPath": "skills/execution-loop/ci-watch/SKILL.md",
-      "computedHash": "4b21cbd16496b1d139af8599cb0dff1f881b60ed9d67d0c34d38b1b477a00a09"
+      "computedHash": "c4d582558fbce67f1949d5f65a5b3271eacc3885b4d58043ee537064b46ac91d"
     },
     "code-review": {
       "source": "cill-i-am/skills",
@@ -59,7 +59,7 @@
       "source": "cill-i-am/skills",
       "sourceType": "github",
       "skillPath": "skills/core-standards/improve-codebase-architecture/SKILL.md",
-      "computedHash": "91b0890014c60022daddb50b76b2f43919ba421e910844b55d5a522f1e6f3262"
+      "computedHash": "11b899946126e93f6ab0aef6b62e55a454c5f39cf8480181bb16a7124a3e26fc"
     },
     "linear-setup": {
       "source": "cill-i-am/skills",
@@ -83,7 +83,7 @@
       "source": "cill-i-am/skills",
       "sourceType": "github",
       "skillPath": "skills/execution-loop/reconcile-project/SKILL.md",
-      "computedHash": "68f06d6018dc684a69228dccb4d3c40d1cc145879d8ccda80056c9b1e94a0500"
+      "computedHash": "b0446b442c6a50d5969d3d81621ec2eebccf34ac3d3e559dc7cbb0e7d53aad76"
     },
     "research-prompt": {
       "source": "cill-i-am/skills",

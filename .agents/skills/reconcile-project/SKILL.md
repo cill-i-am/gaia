@@ -51,9 +51,13 @@ Find and repair or report:
 - source, issue, and PR scope materially disagreeing.
 
 Do not repeatedly re-prove unchanged history when no decision or mutation
-depends on it. Do not recreate plan-review cycles, approval chains, or complete
-governance narratives. Do not treat provenance repair as permission to reset,
-clean, merge, auto-rebase, force-move, or discard useful work.
+depends on it. When a read or control endpoint times out, make at most one
+targeted fallback check; if the decision-relevant state is still unchanged,
+report the blocker or no delta and stop the current run instead of retrying the
+same poll, wait, or delivery. Do not recreate plan-review cycles, approval
+chains, or complete governance narratives. Do not treat provenance repair as
+permission to reset, clean, merge, auto-rebase, force-move, or discard useful
+work.
 
 ## Actions
 
